@@ -1,5 +1,6 @@
 pub mod cli;
 pub mod domain;
+pub mod error;
 pub mod report;
 
 use std::collections::HashSet;
@@ -9,7 +10,12 @@ use std::path::Path;
 use domain::{load_allowlist, parse_csv_line, process_line, DomainRecord};
 
 /// Main processing function: reads input, processes domains, generates report.
-pub fn run(input_path: &Path, allowlist_path: Option<&Path>, out_dir: &Path) -> Result<(), String> {
+pub fn run(
+    input_path: &Path,
+    allowlist_path: Option<&Path>,
+    out_dir: &Path,
+    json_output: bool,
+) -> Result<(), String> {
     // Read input file
     let input_content = fs::read_to_string(input_path).map_err(|e| {
         format!(
@@ -88,7 +94,7 @@ pub fn run(input_path: &Path, allowlist_path: Option<&Path>, out_dir: &Path) -> 
         .count();
 
     // Generate report
-    crate::report::generate_report(&records, out_dir, allowlisted_count)?;
+    crate::report::generate_report(&records, out_dir, allowlisted_count, json_output)?;
 
     // Print terminal summary
     println!("IOCGuard report");
@@ -109,28 +115,50 @@ mod tests {
 
     #[test]
     fn test_run_with_sample_data() {
-        // This is an integration test
         let input = "data/domains.csv";
         let allowlist = "data/allowlist.txt";
         let out = "test_report";
 
-        // Create the output path relative to workspace
-        // Since tests run from the project root
         let out_path = PathBuf::from(out);
-
-        // Remove if exists
         let _ = fs::remove_dir_all(&out_path);
 
-        let result = run(Path::new(input), Some(Path::new(allowlist)), &out_path);
+        let result = run(
+            Path::new(input),
+            Some(Path::new(allowlist)),
+            &out_path,
+            false,
+        );
         assert!(result.is_ok());
 
-        // Check files exist
         assert!(out_path.join("accepted.csv").exists());
         assert!(out_path.join("suspicious.csv").exists());
         assert!(out_path.join("rejected.csv").exists());
         assert!(out_path.join("summary.txt").exists());
 
-        // Clean up
+        let _ = fs::remove_dir_all(&out_path);
+    }
+
+    #[test]
+    fn test_run_with_json_output() {
+        let input = "data/domains.csv";
+        let out = "test_report_json";
+
+        let out_path = PathBuf::from(out);
+        let _ = fs::remove_dir_all(&out_path);
+
+        let result = run(Path::new(input), None, &out_path, true);
+        assert!(result.is_ok());
+
+        // JSON output should exist
+        assert!(out_path.join("report.json").exists());
+
+        // Verify JSON content
+        let json_content = fs::read_to_string(out_path.join("report.json")).unwrap();
+        assert!(json_content.contains("summary"));
+        assert!(json_content.contains("accepted"));
+        assert!(json_content.contains("suspicious"));
+        assert!(json_content.contains("rejected"));
+
         let _ = fs::remove_dir_all(&out_path);
     }
 }

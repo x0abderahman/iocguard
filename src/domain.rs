@@ -3,6 +3,8 @@
 use std::collections::HashSet;
 use std::fmt;
 
+use crate::error::DomainError;
+
 /// Status of a domain after processing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DomainStatus {
@@ -64,7 +66,7 @@ impl DomainRecord {
         }
     }
 
-    /// Create a new rejected domain record.
+    /// Create a new rejected domain record with a DomainError.
     pub fn rejected(original: String, source: String, reason: String) -> Self {
         DomainRecord {
             original,
@@ -85,45 +87,45 @@ pub fn normalize(domain: &str) -> String {
 }
 
 /// Check if a domain is valid after normalization.
-/// Returns Ok(()) if valid, or Err with a reason string if invalid.
-pub fn validate(domain: &str) -> Result<(), String> {
+/// Returns Ok(()) if valid, or Err(DomainError) if invalid.
+pub fn validate(domain: &str) -> Result<(), DomainError> {
     if domain.is_empty() {
-        return Err("Domain is empty".to_string());
+        return Err(DomainError::Empty);
     }
 
     if !domain.contains('.') {
-        return Err("Domain has no dot".to_string());
+        return Err(DomainError::NoDot);
     }
 
     if domain.len() > 253 {
-        return Err("Domain length exceeds 253 characters".to_string());
+        return Err(DomainError::TooLong(domain.len()));
     }
 
     // Check for consecutive dots
     if domain.contains("..") {
-        return Err("Domain contains consecutive dots".to_string());
+        return Err(DomainError::ConsecutiveDots);
     }
 
     let labels: Vec<&str> = domain.split('.').collect();
 
     for label in &labels {
         if label.is_empty() {
-            return Err("Domain contains an empty label".to_string());
+            return Err(DomainError::EmptyLabel);
         }
 
         if label.len() > 63 {
-            return Err("A label exceeds 63 characters".to_string());
+            return Err(DomainError::LabelTooLong(label.len()));
         }
 
         if label.starts_with('-') || label.ends_with('-') {
-            return Err("A label starts or ends with a hyphen".to_string());
+            return Err(DomainError::LabelHyphenEdge(label.to_string()));
         }
     }
 
     // Check characters: only lowercase letters, digits, dots, hyphens allowed
     for c in domain.chars() {
         if !c.is_ascii_lowercase() && !c.is_ascii_digit() && c != '.' && c != '-' {
-            return Err(format!("Domain contains invalid character '{}'", c));
+            return Err(DomainError::InvalidCharacter(c));
         }
     }
 
@@ -158,7 +160,7 @@ pub fn check_suspicious(domain: &str, allowlist: &HashSet<String>) -> Option<Str
     for kw in &keywords {
         if domain.contains(kw) {
             reasons.push(format!("contains keyword '{}'", kw));
-            break; // Only report once for keywords
+            break;
         }
     }
 
@@ -183,7 +185,7 @@ pub fn process_line(domain: &str, source: &str, allowlist: &HashSet<String>) -> 
     let normalized = normalize(domain);
 
     match validate(&normalized) {
-        Err(reason) => DomainRecord::rejected(original, source, reason),
+        Err(e) => DomainRecord::rejected(original, source, e.to_string()),
         Ok(()) => match check_suspicious(&normalized, allowlist) {
             Some(reason) => DomainRecord::suspicious(original, normalized, source, reason),
             None => DomainRecord::accepted(original, normalized, source),
@@ -192,22 +194,24 @@ pub fn process_line(domain: &str, source: &str, allowlist: &HashSet<String>) -> 
 }
 
 /// Parse a CSV line (domain,source). Returns (domain, source) or an error.
-pub fn parse_csv_line(line: &str) -> Result<(&str, &str), String> {
+pub fn parse_csv_line(line: &str) -> Result<(&str, &str), DomainError> {
     let trimmed = line.trim();
     if trimmed.is_empty() {
-        return Err("Empty line".to_string());
+        return Err(DomainError::CsvParseError("Empty line".to_string()));
     }
 
     // Split on first comma only
     let comma_pos = trimmed
         .find(',')
-        .ok_or_else(|| "Missing comma separator".to_string())?;
+        .ok_or_else(|| DomainError::CsvParseError("Missing comma separator".to_string()))?;
 
     let domain = &trimmed[..comma_pos];
     let source = &trimmed[comma_pos + 1..];
 
     if domain.is_empty() {
-        return Err("Domain field is empty".to_string());
+        return Err(DomainError::CsvParseError(
+            "Domain field is empty".to_string(),
+        ));
     }
 
     Ok((domain, source))
@@ -225,6 +229,9 @@ pub fn load_allowlist(content: &str) -> HashSet<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::DomainError;
+
+    // === Required tests from specification ===
 
     #[test]
     fn test_normalize_example_com() {
@@ -239,20 +246,22 @@ mod tests {
     #[test]
     fn test_reject_consecutive_dots() {
         let result = validate("bad..domain");
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("consecutive dots"));
+        assert_eq!(result, Err(DomainError::ConsecutiveDots));
     }
 
     #[test]
     fn test_reject_hyphen_prefix() {
         let result = validate("-malformed.com");
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("hyphen"));
+        // The label "-malformed" starts with a hyphen
+        assert_eq!(
+            result,
+            Err(DomainError::LabelHyphenEdge("-malformed".to_string()))
+        );
     }
 
     #[test]
     fn test_suspicious_valid_but_suspicious() {
-        // paypa1-login.xyz is valid but should be suspicious
         let normalized = normalize("paypa1-login.xyz");
         assert_eq!(normalized, "paypa1-login.xyz");
         assert!(validate(&normalized).is_ok());
@@ -264,27 +273,28 @@ mod tests {
 
     #[test]
     fn test_allowlisted_not_suspicious() {
-        // An allowlisted domain should not be suspicious even if it matches patterns
         let mut allowlist = HashSet::new();
         allowlist.insert("paypa1-login.xyz".to_string());
         let result = check_suspicious("paypa1-login.xyz", &allowlist);
         assert!(result.is_none());
     }
 
+    // === Additional edge case tests ===
+
     #[test]
     fn test_empty_domain() {
-        assert!(validate("").is_err());
+        assert_eq!(validate(""), Err(DomainError::Empty));
     }
 
     #[test]
     fn test_no_dot() {
-        assert!(validate("localhost").is_err());
+        assert_eq!(validate("localhost"), Err(DomainError::NoDot));
     }
 
     #[test]
     fn test_long_label() {
         let long = "a".repeat(64) + ".com";
-        assert!(validate(&long).is_err());
+        assert_eq!(validate(&long), Err(DomainError::LabelTooLong(64)));
     }
 
     #[test]
@@ -376,5 +386,120 @@ mod tests {
         assert!(allowlist.contains("example.com"));
         assert!(allowlist.contains("safe-school.edu"));
         assert_eq!(allowlist.len(), 2);
+    }
+
+    // === Bonus: Edge case tests ===
+
+    #[test]
+    fn test_domain_with_underscore() {
+        assert_eq!(
+            validate("bad_domain.com"),
+            Err(DomainError::InvalidCharacter('_'))
+        );
+    }
+
+    #[test]
+    fn test_domain_with_space() {
+        assert_eq!(
+            validate("bad domain.com"),
+            Err(DomainError::InvalidCharacter(' '))
+        );
+    }
+
+    #[test]
+    fn test_domain_with_uppercase_after_normalize() {
+        // After normalization, uppercase becomes lowercase, so this should be valid
+        let normalized = normalize("HELLO.COM");
+        assert_eq!(normalized, "hello.com");
+        assert!(validate(&normalized).is_ok());
+    }
+
+    #[test]
+    fn test_allowlist_with_trailing_dot() {
+        // Allowlist entries are normalized too
+        let content = "example.com.\n";
+        let allowlist = load_allowlist(content);
+        assert!(allowlist.contains("example.com"));
+    }
+
+    #[test]
+    fn test_multiple_consecutive_dots() {
+        assert_eq!(validate("a...b.com"), Err(DomainError::ConsecutiveDots));
+    }
+
+    #[test]
+    fn test_trailing_dot_valid() {
+        // After normalization, trailing dot is removed
+        let normalized = normalize("test.example.com.");
+        assert_eq!(normalized, "test.example.com");
+        assert!(validate(&normalized).is_ok());
+    }
+
+    #[test]
+    fn test_hyphen_suffix_label() {
+        assert_eq!(
+            validate("example-.com"),
+            Err(DomainError::LabelHyphenEdge("example-".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_all_suspicious_tlds() {
+        let allowlist = HashSet::new();
+        for tld in &["zip", "mov", "top", "xyz", "tk"] {
+            let domain = format!("test.{}", tld);
+            let result = check_suspicious(&domain, &allowlist);
+            assert!(result.is_some(), "TLD .{} should be suspicious", tld);
+            assert!(
+                result.unwrap().contains(tld),
+                "Reason should mention .{}",
+                tld
+            );
+        }
+    }
+
+    #[test]
+    fn test_all_suspicious_keywords() {
+        let allowlist = HashSet::new();
+        for kw in &["login", "verify", "secure", "update", "paypa1"] {
+            let domain = format!("{}-test.com", kw);
+            let result = check_suspicious(&domain, &allowlist);
+            assert!(result.is_some(), "Keyword '{}' should be suspicious", kw);
+            assert!(
+                result.unwrap().contains(kw),
+                "Reason should mention '{}'",
+                kw
+            );
+        }
+    }
+
+    #[test]
+    fn test_exactly_253_chars() {
+        // 4 labels of 63, 63, 63, 62 = 63+1+63+1+63+1+62 = 254... one too many
+        // 3 labels of 63 + 1 dot + 63*2 = too many labels
+        // Let's do: 63 + '.' + 63 + '.' + 63 + '.' + 61 = 253
+        let label = "a".repeat(63);
+        let domain = format!("{}.{}.{}.{}", label, label, label, "a".repeat(61));
+        assert_eq!(
+            domain.len(),
+            253,
+            "Expected 253 chars, got {}",
+            domain.len()
+        );
+        assert!(validate(&domain).is_ok());
+    }
+
+    #[test]
+    fn test_exactly_254_chars() {
+        // 63 + '.' + 63 + '.' + 63 + '.' + 62 = 254
+        let label = "a".repeat(63);
+        let domain = format!("{}.{}.{}.{}", label, label, label, "a".repeat(62));
+        assert_eq!(
+            domain.len(),
+            254,
+            "Expected 254 chars, got {}",
+            domain.len()
+        );
+        assert!(validate(&domain).is_err());
     }
 }
