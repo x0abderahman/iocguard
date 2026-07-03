@@ -7,7 +7,7 @@ A small Rust security-oriented command-line utility for defensive security opera
 A security analyst receives a list of domain indicators from multiple sources. Some entries are
 valid, some are malformed, some are allowlisted, and some look suspicious according to simple
 local rules. IOCGuard reads domain indicators, validates and normalizes them, classifies
-suspicious ones, and generates a structured report.
+suspicious ones, and generates a structured report (CSV or JSON).
 
 ## Repository Structure
 
@@ -19,11 +19,21 @@ iocguard/
 ├── data/
 │   ├── domains.csv
 │   └── allowlist.txt
+├── screenshots/
+│   ├── 01_docker_environment.png
+│   ├── 02_cargo_run.png
+│   ├── 03_cargo_test.png
+│   ├── 04_cargo_fmt_clippy.png
+│   ├── 05_report_files.png
+│   ├── 06_cargo_run_json.png
+│   ├── 07_report_files_json.png
+│   └── 08_cargo_test_json.png
 ├── src/
 │   ├── main.rs
 │   ├── lib.rs
 │   ├── cli.rs
 │   ├── domain.rs
+│   ├── error.rs         # Custom error types (bonus)
 │   └── report.rs
 └── tests/
     └── integration_tests.rs
@@ -46,17 +56,24 @@ iocguard/
 
 ## Usage
 
+### Standard CSV output
 ```bash
 cargo run -- validate --input data/domains.csv --allowlist data/allowlist.txt --out report
 ```
 
+### JSON output (bonus feature)
+```bash
+cargo run -- validate --input data/domains.csv --allowlist data/allowlist.txt --out report --json
+```
+
 ### Arguments
 
-| Argument       | Description                          |
-|----------------|--------------------------------------|
-| `--input`      | Path to the domain CSV file (required) |
-| `--allowlist`  | Path to the allowlist file (optional)  |
-| `--out`        | Output report directory (required)     |
+| Argument       | Description                                   |
+|----------------|-----------------------------------------------|
+| `--input`      | Path to the domain CSV file (required)        |
+| `--allowlist`  | Path to the allowlist file (optional)         |
+| `--out`        | Output report directory (required)            |
+| `--json`       | Generate JSON output instead of CSV (bonus)   |
 
 ## Validation Rules
 
@@ -79,10 +96,30 @@ A valid domain is marked suspicious if it is **not allowlisted** and at least on
 - It contains one of the keywords: `login`, `verify`, `secure`, `update`, `paypa1`
 - It contains three or more hyphens
 
+## Bonus Features
+
+### 1. JSON Output (`--json` flag)
+When `--json` is provided, the tool generates `report.json` with structured data instead of CSV files.
+The JSON includes summary statistics, accepted domains, suspicious domains with reasons, and
+rejected entries with original values.
+
+### 2. Custom Error Types
+The project uses three custom error enums instead of generic strings:
+- `CliError` - for CLI argument parsing errors
+- `DomainError` - for domain validation errors (Empty, NoDot, ConsecutiveDots, etc.)
+- `ReportError` - for file/report generation errors
+
+### 3. Extended Test Suite
+38 tests in total covering:
+- Required specification tests (normalization, validation, suspicion, allowlist)
+- Edge cases: underscores, spaces, uppercase, multiple consecutive dots
+- Boundary tests: exactly 253/254 character domains
+- All suspicious TLDs and keywords tested individually
+
 ## Testing and Quality Checks
 
 ```bash
-# Run unit tests and integration tests
+# Run all 38 tests
 cargo test
 
 # Check formatting
@@ -94,13 +131,18 @@ cargo clippy -- -D warnings
 
 ## Output Files
 
-The tool generates the following files in the output directory:
-
+### CSV mode (default)
 | File             | Description                                |
 |------------------|--------------------------------------------|
 | `accepted.csv`   | Valid, non-suspicious domains              |
 | `suspicious.csv` | Valid but suspicious domains               |
 | `rejected.csv`   | Invalid lines with rejection reasons       |
+| `summary.txt`    | Human-readable summary of the results      |
+
+### JSON mode (`--json`)
+| File             | Description                                |
+|------------------|--------------------------------------------|
+| `report.json`    | Structured JSON with all results           |
 | `summary.txt`    | Human-readable summary of the results      |
 
 ## Known Limitations
@@ -112,4 +154,4 @@ The tool generates the following files in the output directory:
 
 ## Team Members
 
-- ShadowByte
+- Abderahman Mohamed Lemin (ID: 25235)
